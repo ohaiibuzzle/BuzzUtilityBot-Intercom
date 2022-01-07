@@ -1,0 +1,15 @@
+aiohttp==3.7.4.post0
+aiosqlite==0.17.0
+async-timeout==3.0.1
+attrs==21.4.0
+chardet==4.0.0
+click==8.0.3
+idna==3.3
+multidict==5.2.0
+mypy-extensions==0.4.3
+pathspec==0.9.0
+platformdirs==2.4.1
+py-cord==1.7.3
+tomli==1.2.3
+typing_extensions==4.0.1
+yarl==1.7.2
