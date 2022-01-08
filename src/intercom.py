@@ -267,7 +267,7 @@ class Intercom(commands.Cog):
                         lambda m: m.id == row[0], self.all_channels
                     )
                     await ctx.send(
-                        f"`#{source.name}` ↔️ `#{target}` (`{target.id}-{source.guild.name}`)"
+                        f"`#{source.name}` ↔️ `#{target}` (`{target.id}-{target.guild.name}`)"
                     )
 
     @commands.Cog.listener()
@@ -331,7 +331,7 @@ class Intercom(commands.Cog):
                     else:
                         webhook = row[0]
 
-                    print(webhook)
+                    # print(webhook)
 
                     webhook = discord.Webhook.from_url(
                         webhook, adapter=discord.AsyncWebhookAdapter(session)
