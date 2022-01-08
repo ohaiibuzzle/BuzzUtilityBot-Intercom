@@ -17,7 +17,7 @@ if not os.path.isdir("runtime"):
 config = configparser.ConfigParser()
 config.read("runtime/config.ini")
 
-client = commands.Bot(command_prefix=".")
+client = commands.Bot(command_prefix="$linktool.")
 
 
 @client.event
@@ -27,7 +27,7 @@ async def on_ready():
     print(client.user.id)
     print("------")
     await client.change_presence(
-        activity=discord.Game(name="onboard the Universal Cereal Bus")
+        activity=discord.Game(name="aboard the Universal Cereal Bus")
     )
 
 

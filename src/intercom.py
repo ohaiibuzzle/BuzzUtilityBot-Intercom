@@ -1,3 +1,4 @@
+from discord import webhook
 from discord.ext import commands, tasks
 import sqlite3, aiosqlite, asyncio, os
 import discord
@@ -32,7 +33,8 @@ class Intercom(commands.Cog):
     @tasks.loop(seconds=300)
     async def update_channels(self):
         print("Updating channels")
-        self.all_channels = self.client.get_all_channels()
+        self.all_channels = [channel for channel in self.client.get_all_channels()]
+        print("Done")
 
     @commands.command()
     async def link(self, ctx: commands.Context, channel: int):
@@ -52,7 +54,13 @@ class Intercom(commands.Cog):
                 if await c.fetchone() is not None:
                     return await ctx.send("You are already linked!")
 
-                target = discord.utils.get(self.all_channels, id=channel)
+                target = discord.utils.find(
+                    lambda m: m.id == channel, self.all_channels
+                )
+
+                if target == ctx.channel:
+                    return await ctx.send("You can't link to yourself!")
+
                 if target is None:
                     return await ctx.send(
                         "Invalid channel ID or this bot cannot see that channel (If you just created this channel, please wait about 5 minutes)!"
@@ -142,12 +150,16 @@ class Intercom(commands.Cog):
                     "SELECT * FROM intercom WHERE peer1=? AND peer2=?",
                     (ctx.channel.id, channel),
                 )
-                unlink_candidate.append(await c.fetchone())
+                candidate = await c.fetchone()
+                if candidate is not None:
+                    unlink_candidate.append(candidate)
                 await c.execute(
                     "SELECT * FROM intercom WHERE peer1=? AND peer2=?",
                     (channel, ctx.channel.id),
                 )
-                unlink_candidate.append(await c.fetchone())
+                candidate = await c.fetchone()
+                if candidate is not None:
+                    unlink_candidate.append(candidate)
 
                 if unlink_candidate.__len__() == 0:
                     return await ctx.send("You are not linked!")
@@ -160,6 +172,28 @@ class Intercom(commands.Cog):
                     "DELETE FROM intercom WHERE peer1=? AND peer2=?",
                     (channel, ctx.channel.id),
                 )
+                async with aiohttp.ClientSession() as session:
+                    for unlink in unlink_candidate:
+                        if unlink is None:
+                            continue
+                        target = discord.utils.find(
+                            lambda m: m.id == unlink[1], self.all_channels
+                        )
+                        if target is None:
+                            continue
+                        target_wh = await c.execute(
+                            "SELECT * FROM webhooks_urls WHERE id=?", (target.id,)
+                        )
+                        webhook_url = await target_wh.fetchone()
+                        if webhook_url is None:
+                            continue
+                        webhook = discord.Webhook.from_url(
+                            webhook_url[1], adapter=discord.AsyncWebhookAdapter(session)
+                        )
+                        await webhook.delete()
+                        await c.execute(
+                            "DELETE FROM webhooks_urls WHERE id=?", (target.id,)
+                        )
                 await db.commit()
                 await ctx.send("Successfully unlinked!")
 
@@ -168,6 +202,7 @@ class Intercom(commands.Cog):
         """
         Change the state of the link between channels (toggle active bit)
         """
+        toggle_candidate = []
         if ctx.author.permissions_in(ctx.channel).manage_channels:
             async with aiosqlite.connect("runtime/intercom.db") as db:
                 c = await db.cursor()
@@ -175,24 +210,65 @@ class Intercom(commands.Cog):
                     "SELECT * FROM intercom WHERE peer1=? AND peer2=?",
                     (ctx.channel.id, channel),
                 )
-                if c.fetchone() is None:
-                    return await ctx.send("You are not linked!")
+                candidate = await c.fetchone()
+                if candidate is not None:
+                    toggle_candidate.append(candidate)
                 await c.execute(
                     "SELECT * FROM intercom WHERE peer1=? AND peer2=?",
                     (channel, ctx.channel.id),
                 )
-                if await c.fetchone() is None:
+                candidate = await c.fetchone()
+                if candidate is not None:
+                    toggle_candidate.append(candidate)
+
+                if toggle_candidate.__len__() == 0:
                     return await ctx.send("You are not linked!")
+
                 await c.execute(
                     "UPDATE intercom SET active=? WHERE peer1=? AND peer2=?",
-                    (1 - c.fetchone()[3], ctx.channel.id, channel),
+                    (1 - toggle_candidate[0][5], ctx.channel.id, channel),
                 )
                 await c.execute(
                     "UPDATE intercom SET active=? WHERE peer1=? AND peer2=?",
-                    (1 - c.fetchone()[3], channel, ctx.channel.id),
+                    (1 - toggle_candidate[0][5], channel, ctx.channel.id),
                 )
                 await db.commit()
                 await ctx.send("Successfully toggled!")
+
+    @commands.command()
+    async def listlinks(self, ctx):
+        """
+        List all the channels that are linked to this channel
+        """
+        async with aiosqlite.connect("runtime/intercom.db") as db:
+            c = await db.cursor()
+            await c.execute(
+                "SELECT peer1, peer2 FROM intercom WHERE peer1=? OR peer2=?",
+                (ctx.channel.id, ctx.channel.id),
+            )
+            result = await c.fetchall()
+            if result.__len__() == 0:
+                return await ctx.send("You are not linked!")
+
+            for row in result:
+                if row is None:
+                    continue
+                if row[0] == ctx.channel.id:
+                    source = ctx.channel
+                    target = discord.utils.find(
+                        lambda m: m.id == row[1], self.all_channels
+                    )
+                    await ctx.send(
+                        f"`#{source.name}` ↔️ `#{target}` (`{target.id}@{target.guild.name}`)"
+                    )
+                else:
+                    source = ctx.channel
+                    target = discord.utils.find(
+                        lambda m: m.id == row[0], self.all_channels
+                    )
+                    await ctx.send(
+                        f"`#{source.name}` ↔️ `#{target}` (`{target.id}-{source.guild.name}`)"
+                    )
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -200,6 +276,8 @@ class Intercom(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        if message.content.startswith("$linktool."):
+            return
         if message.author.bot:
             return
         if message.content.startswith("https://discord."):
@@ -215,26 +293,32 @@ class Intercom(commands.Cog):
                 (message.channel.id,),
             )
             for target in await c.fetchall():
-                targets.append(target[2])
+                if target is not None:
+                    targets.append(target[2])
             await c.execute(
                 "SELECT * FROM intercom WHERE peer2=? AND active=1",
                 (message.channel.id,),
             )
             for target in await c.fetchall():
-                targets.append(target[1])
+                if target is not None:
+                    targets.append(target[1])
 
             if targets.__len__() == 0:
                 return
 
+            # print(targets)
+
             async with aiohttp.ClientSession() as session:
                 for target in targets:
-                    target = discord.utils.get(self.all_channels, id=target)
-                    webhook = ""
-                    webhook_urls = await c.execute(
-                        "SELECT * FROM webhooks_urls WHERE id=?", (target.id,)
+                    target = discord.utils.find(
+                        lambda m: m.id == target, self.all_channels
                     )
-                    webhook_url = await webhook_urls.fetchone()
-                    if webhook_url is None:
+                    webhook = ""
+                    rows = await c.execute(
+                        "SELECT url FROM webhooks_urls WHERE id=?", (target.id,)
+                    )
+                    row = await rows.fetchone()
+                    if row is None:
                         webhook = await target.create_webhook(
                             name=f"Intercom_{target.name}"
                         )
@@ -242,11 +326,12 @@ class Intercom(commands.Cog):
                             "INSERT INTO webhooks_urls VALUES (?, ?, ?)",
                             (target.id, webhook.url, target.guild.id),
                         )
+                        await db.commit()
                         webhook = webhook.url
                     else:
-                        webhook = webhook_url[1]
+                        webhook = row[0]
 
-                    # print(webhook)
+                    print(webhook)
 
                     webhook = discord.Webhook.from_url(
                         webhook, adapter=discord.AsyncWebhookAdapter(session)
@@ -256,13 +341,24 @@ class Intercom(commands.Cog):
                         files=files,
                         embeds=embeds,
                         avatar_url=message.author.avatar_url,
-                        username=f"{message.author.name}",
+                        username=f"{message.author.name} @ {message.guild.name}",
                     )
-                    await webhook.delete()
 
     @commands.Cog.listener()
-    async def on_guild_join(self):
-        self.all_channels = self.client.get_all_channels()
+    async def on_guild_join(self, guild):
+        self.all_channels = [channel for channel in self.client.get_all_channels()]
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel):
+        async with aiosqlite.connect("runtime/intercom.db") as db:
+            c = await db.cursor()
+            await c.execute(
+                "DELETE FROM intercom WHERE peer1=? OR peer2=?",
+                (channel.id, channel.id),
+            )
+            await c.execute("DELETE FROM webhooks_urls WHERE id=?", (channel.id,))
+            self.all_channels = [channel for channel in self.client.get_all_channels()]
+            await db.commit()
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild):
@@ -273,6 +369,7 @@ class Intercom(commands.Cog):
                 (guild.id, guild.id),
             )
             await c.execute("DELETE FROM webhooks_urls WHERE gid=?", (guild.id,))
+            self.all_channels = [channel for channel in self.client.get_all_channels()]
             return await db.commit()
 
 
