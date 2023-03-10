@@ -3,10 +3,13 @@ from discord.ext import commands, tasks
 import sqlite3, aiosqlite, asyncio, os
 import discord
 import aiohttp
+import random
+import string
 from discord.ext.commands.core import command
 
-
 class Intercom(commands.Cog):
+    ban_cache = {}
+
     def __init__(self, client):
         def setup_database():
             if not os.path.exists("runtime/intercom.db"):
@@ -18,11 +21,18 @@ class Intercom(commands.Cog):
                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                     peer1 INTEGER, peer2 INTEGER, 
                     peer1_gid INTEGER, peer2_gid INTEGER, 
-                    active INTEGER DEFAULT 1)
+                    active INTEGER DEFAULT 1,
+                    sync_bans INTEGER DEFAULT 1)
                     """
                 )
                 c.execute(
-                    "CREATE TABLE IF NOT EXISTS webhooks_urls (id INTEGER PRIMARY KEY, url TEXT, gid INTEGER)"
+                    "CREATE TABLE IF NOT EXISTS webhooks_urls (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT, gid INTEGER)"
+                )
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS silent_list (id INTEGER PRIMARY KEY AUTOINCREMENT, gid INTEGER, silent_gid INTEGER)"
+                )
+                c.execute(
+                    "CREATE TABLE IF NOT EXISTS fail2ban (id INTEGER PRIMARY KEY AUTOINCREMENT, gid INTEGER, silent_gid INTEGER, count INTEGER DEFAULT 0)"
                 )
                 conn.commit()
                 conn.close()
@@ -36,34 +46,92 @@ class Intercom(commands.Cog):
         self.all_channels = [channel for channel in self.client.get_all_channels()]
         print("Done")
 
+    @update_channels.before_loop
+    async def before_update_channels(self):
+        # Wait for the bot to be ready
+        await self.client.wait_until_ready()
+
+    @tasks.loop(seconds=86400)
+    async def update_ban_cache(self):
+        print("Updating global ban cache")
+        guilds = self.client.guilds
+        for guild in guilds:
+            try:
+                self.ban_cache[guild.id] = [ban.user.id for ban in await guild.bans().flatten()]
+            except discord.errors.Forbidden:
+                print(f"Failed to get bans for {guild.name} ({guild.id})")
+                self.ban_cache[guild.id] = []
+        print("Done")
+
+    @update_ban_cache.before_loop
+    async def before_update_ban_cache(self):
+        # Wait for the bot to be ready
+        await self.client.wait_until_ready()
+
+    async def is_user_banned(self, guild_id: int, user: discord.User):
+        if guild_id in self.ban_cache:
+            return user.id in self.ban_cache[guild_id]
+        else:
+            return False
+        
     @commands.command()
-    async def link(self, ctx: commands.Context, channel: int):
-        if ctx.author.permissions_in(ctx.channel).manage_channels:
+    async def link(self, ctx: commands.Context, channel: int, sync_bans: bool = True):
+        if ctx.channel.permissions_for(ctx.author).manage_channels:
             async with aiosqlite.connect("runtime/intercom.db") as db:
                 c = await db.cursor()
-                await c.execute(
-                    "SELECT * FROM intercom WHERE peer1=? AND peer2=?",
-                    (ctx.channel.id, channel),
+
+                # Check if this set of channels is already linked (both ways)
+                check = await c.execute(
+                    "SELECT * FROM intercom WHERE (peer1=? AND peer2=?) OR (peer1=? AND peer2=?)",
+                    (ctx.channel.id, channel, channel, ctx.channel.id),
                 )
-                if await c.fetchone() is not None:
-                    return await ctx.send("You are already linked!")
-                await c.execute(
-                    "SELECT * FROM intercom WHERE peer1=? AND peer2=?",
-                    (channel, ctx.channel.id),
-                )
-                if await c.fetchone() is not None:
-                    return await ctx.send("You are already linked!")
+                check = await check.fetchone()
+                if check is not None:
+                    return await ctx.send("The target channel is already linked!")
 
                 target = discord.utils.find(
                     lambda m: m.id == channel, self.all_channels
                 )
+
+                # Check if the target server silenced the initiating server or the initiator failed too many times
+                check = await c.execute(
+                    "SELECT * FROM silent_list WHERE gid=? AND silent_gid=?",
+                    (ctx.guild.id, target.guild.id)
+                )
+                check = await check.fetchone()
+                if check is not None:
+                    # Throw a dubious error message
+                    return await ctx.send("You can only link text channels!")
+                
+                check = await c.execute(
+                    "SELECT * FROM fail2ban WHERE gid=? AND silent_gid=?",
+                    (ctx.guild.id, target.guild.id)
+                )
+                check = await check.fetchone()
+                if check is not None:
+                    # If more than 3 fails, throw a dubious error message
+                    if check[3] > 3:
+                        await ctx.send("You can only link text channels!")
+                        # ... and silent the initiating server from the target 
+                        await c.execute(
+                            "INSERT INTO silent_list VALUES (?, ?)",
+                            (target.guild.id, ctx.guild.id)
+                        )
+                        # remove the counter
+                        await c.execute(
+                            "DELETE FROM fail2ban WHERE gid=? AND silent_gid=?",
+                            (ctx.guild.id, target.guild.id)
+                        )
 
                 if target == ctx.channel:
                     return await ctx.send("You can't link to yourself!")
 
                 if target is None:
                     return await ctx.send(
-                        "Invalid channel ID or this bot cannot see that channel (If you just created this channel, please wait about 5 minutes)!"
+                        """
+                        Invalid channel ID or this bot cannot see the target channel 
+                        (If you just created the target channel, please wait about 5 minutes)!
+                        """
                     )
 
                 if (
@@ -71,35 +139,69 @@ class Intercom(commands.Cog):
                     or target.type != discord.ChannelType.text
                 ):
                     return await ctx.send("You can only link text channels!")
+                
+                # Warn and disable sync_bans if we don't have the required permissions
+                if not ctx.channel.permissions_for(ctx.guild.me).ban_members and sync_bans:
+                    sync_bans = False
+                    await ctx.send("Since the Ban Members permission is not granted to the bridge (we need it to access the banned member list), \
+                                   we won't be able to sync bans! Proceed with caution!")
+
+                # Generate 6 random digits (prevents people from guessing the link)
+                random_string = "".join(
+                    random.choice(string.digits)
+                    for _ in range(6)
+                )
 
                 def verify_target(msg):
                     return (
                         msg.channel == target
-                        and msg.author.permissions_in(target).manage_channels
-                        and msg.content == "Confirm"
+                        and msg.channel.permissions_for(msg.author).manage_channels
+                        and msg.content == random_string
                     )
 
                 try:
                     await ctx.send("Waiting for confirmation...")
-                    await target.send(
-                        f"There is a request to link this channel! (channel: {ctx.channel.name}, server: {ctx.guild.name})"
+
+                    embed = discord.Embed(
+                        title="Linking request",
+                        description=f"There is a request to link to this channel from #{ctx.channel.name} (server: {ctx.guild.name})",
+                        color=0x00FF00,
                     )
-                    await target.send(
-                        f"This request was created by @{ctx.author.name}#{ctx.author.discriminator}"
-                    )
-                    await target.send(
-                        f"Please type `Confirm` in this channel to confirm"
-                    )
+                    embed.set_footer(text=f"Type {random_string} to confirm or wait 30 seconds to cancel")
+                    await target.send(embed=embed)
+
                     msg = await self.client.wait_for(
                         "message", check=verify_target, timeout=30
                     )
                 except asyncio.TimeoutError:
                     await target.send("Timeout!")
+                    # Add a fail counter or increment it
+                    check = await c.execute(
+                        "SELECT * FROM fail2ban WHERE gid=? AND silent_gid=?",
+                        (ctx.guild.id, target.guild.id)
+                    )
+                    check = await check.fetchone()
+                    if check is None:
+                        await c.execute(
+                            "INSERT INTO fail2ban VALUES (?, ?, ?, ?)",
+                            (ctx.channel.id, ctx.guild.id, target.guild.id, 1)
+                        )
+                    else:
+                        await c.execute(
+                            "UPDATE fail2ban SET count=count+1 WHERE gid=? AND silent_gid=?",
+                            (ctx.guild.id, target.guild.id)
+                        )
                     return await ctx.send(
                         "The other side did not confirm this activity"
                     )
                 else:
                     await ctx.send("Linking...")
+
+                    # Clears any fail counter
+                    await c.execute(
+                        "DELETE FROM fail2ban WHERE gid=? AND silent_gid=?",
+                        (ctx.guild.id, target.guild.id)
+                    )
 
                     source_wh = await c.execute(
                         "SELECT * FROM webhooks_urls WHERE id=?", (ctx.channel.id,)
@@ -129,8 +231,8 @@ class Intercom(commands.Cog):
                         )
 
                     await c.execute(
-                        "INSERT INTO intercom (peer1, peer2, peer1_gid, peer2_gid, active) VALUES (?, ?, ?, ?, ?)",
-                        (ctx.channel.id, channel, ctx.guild.id, target.guild.id, 1),
+                        "INSERT INTO intercom (peer1, peer2, peer1_gid, peer2_gid, active, sync_bans) VALUES (?, ?, ?, ?, ?, ?)",
+                        (ctx.channel.id, channel, ctx.guild.id, target.guild.id, 1, sync_bans),
                     )
                     await db.commit()
                     await ctx.send("Successfully linked!")
@@ -143,19 +245,12 @@ class Intercom(commands.Cog):
     @commands.command()
     async def unlink(self, ctx: commands.Context, channel: int):
         unlink_candidate = []
-        if ctx.author.permissions_in(ctx.channel).manage_channels:
+        if ctx.channel.permissions_for(ctx.author).manage_channels:
             async with aiosqlite.connect("runtime/intercom.db") as db:
                 c = await db.cursor()
                 await c.execute(
-                    "SELECT * FROM intercom WHERE peer1=? AND peer2=?",
-                    (ctx.channel.id, channel),
-                )
-                candidate = await c.fetchone()
-                if candidate is not None:
-                    unlink_candidate.append(candidate)
-                await c.execute(
-                    "SELECT * FROM intercom WHERE peer1=? AND peer2=?",
-                    (channel, ctx.channel.id),
+                    "SELECT * FROM intercom WHERE (peer1=? AND peer2=?) OR (peer1=? AND peer2=?)",
+                    (ctx.channel.id, channel, channel, ctx.channel.id),
                 )
                 candidate = await c.fetchone()
                 if candidate is not None:
@@ -188,7 +283,7 @@ class Intercom(commands.Cog):
                         if webhook_url is None:
                             continue
                         webhook = discord.Webhook.from_url(
-                            webhook_url[1], adapter=discord.AsyncWebhookAdapter(session)
+                            webhook_url[1], session=session
                         )
                         await webhook.delete()
                         await c.execute(
@@ -203,7 +298,7 @@ class Intercom(commands.Cog):
         Change the state of the link between channels (toggle active bit)
         """
         toggle_candidate = []
-        if ctx.author.permissions_in(ctx.channel).manage_channels:
+        if ctx.channel.permissions_for(ctx.author).manage_channels:
             async with aiosqlite.connect("runtime/intercom.db") as db:
                 c = await db.cursor()
                 await c.execute(
@@ -270,39 +365,95 @@ class Intercom(commands.Cog):
                         f"`#{source.name}` ↔️ `#{target}` (`{target.id}-{target.guild.name}`)"
                     )
 
+    @commands.command()
+    async def toggle_ban_sync(self, ctx):
+        """
+        Toggle the ban sync for this channel
+        """
+        if ctx.channel.permissions_for(ctx.author).manage_channels:
+            # Check if we have the Ban User permission (needed to sync bans)
+            if not ctx.channel.permissions_for(ctx.guild.me).ban_members:
+                return await ctx.send(
+                    "The Ban Members permission is necessary to access the ban list!"
+                )
+            async with aiosqlite.connect("runtime/intercom.db") as db:
+                c = await db.cursor()
+                await c.execute(
+                    "SELECT * FROM intercom WHERE peer1=? OR peer2=?",
+                    (ctx.channel.id, ctx.channel.id),
+                )
+                result = await c.fetchall()
+                if result.__len__() == 0:
+                    return await ctx.send("You are not linked!")
+
+                await c.execute(
+                    "UPDATE intercom SET ban_sync=? WHERE peer1=? OR peer2=?",
+                    (1 - result[0][6], ctx.channel.id, ctx.channel.id),
+                )
+                await db.commit()
+                await ctx.send("Successfully toggled!")
+
+    @commands.command()
+    async def toggle_silent(self, ctx, guild_id: int):
+        """
+        Disallow another server from sending link requests to this server
+        """
+        if ctx.channel.permissions_for(ctx.author).manage_channels:
+            async with aiosqlite.connect("runtime/intercom.db") as db:
+                c = await db.cursor()
+                await c.execute(
+                    "SELECT * FROM silent_list WHERE gid=? AND silent_gid=?",
+                    (ctx.guild.id, guild_id),
+                )
+                result = await c.fetchone()
+                if result is None:
+                    await c.execute(
+                        "INSERT INTO silent_list VALUES (?, ?)", (ctx.guild.id, guild_id)
+                    )
+                    await db.commit()
+                    await ctx.send(f"Successfully silenced `{guild_id}`!")
+                else:
+                    await c.execute(
+                        "DELETE FROM silent_list WHERE gid=? AND silent_gid=?",
+                        (ctx.guild.id, guild_id),
+                    )
+                    await db.commit()
+                    await ctx.send(f"Successfully unsilenced `{guild_id}`!")
+
     @commands.Cog.listener()
     async def on_ready(self):
         self.update_channels.start()
+        self.update_ban_cache.start()
 
     @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.content.startswith("$linktool."):
-            return
-        if message.author.bot:
-            return
-        if message.content.startswith("https://discord."):
+    async def on_message(self, message: discord.Message):
+        # Ignore: self, commands provided by self, bots, discord invites & gifts and webhooks
+        if (
+            message.author.bot
+            or message.author == self.client.user
+            or message.content.startswith(self.client.command_prefix)
+            or message.content.startswith("https://discord.gg/")
+            or message.content.startswith("https://discord.com/invite/")
+            or message.content.startswith("https://discordapp.com/invite/")
+            or message.content.startswith("https://discord.gift/")
+            or message.webhook_id is not None
+        ):
             return
         files = [await attachment.to_file() for attachment in message.attachments]
         embeds = [embed for embed in message.embeds]
-        targets = []
+
+        # Ignore message if EVERYTHING is empty at this point (we can't support everything, eg. Stickers)
+        if len(files) == 0 and len(embeds) == 0 and message.content == "":
+            return
+
         # print(f"{message.channel.name}/{message.author.name}/{message.content}")
         async with aiosqlite.connect("runtime/intercom.db") as db:
             c = await db.cursor()
             await c.execute(
-                "SELECT * FROM intercom WHERE peer1=? AND active=1",
-                (message.channel.id,),
+                "SELECT * FROM intercom WHERE (peer1=? AND active=1) OR (peer2=? AND active=1)",
+                (message.channel.id, message.channel.id),
             )
-            for target in await c.fetchall():
-                if target is not None:
-                    targets.append(target[2])
-            await c.execute(
-                "SELECT * FROM intercom WHERE peer2=? AND active=1",
-                (message.channel.id,),
-            )
-            for target in await c.fetchall():
-                if target is not None:
-                    targets.append(target[1])
-
+            targets = await c.fetchall()
             if targets.__len__() == 0:
                 return
 
@@ -310,8 +461,16 @@ class Intercom(commands.Cog):
 
             async with aiohttp.ClientSession() as session:
                 for target in targets:
+                    # if the targets has sync_bans enabled, check if the author is banned in the target channel
+                    target_cid = target[1] if target[1] != message.channel.id else target[2]
+                    target_gid = target[3] if target[1] != message.channel.id else target[4]
+
+                    if target[6] == 1:
+                        if await self.is_user_banned(target_gid, message.author):
+                            continue
+
                     target = discord.utils.find(
-                        lambda m: m.id == target, self.all_channels
+                        lambda m: m.id == target_cid, self.all_channels
                     )
                     webhook = ""
                     rows = await c.execute(
@@ -334,13 +493,13 @@ class Intercom(commands.Cog):
                     # print(webhook)
 
                     webhook = discord.Webhook.from_url(
-                        webhook, adapter=discord.AsyncWebhookAdapter(session)
+                        webhook, session=session
                     )
                     await webhook.send(
                         content=message.content,
                         files=files,
                         embeds=embeds,
-                        avatar_url=message.author.avatar_url,
+                        avatar_url=message.author.avatar.url,
                         username=f"{message.author.name} @ {message.guild.name}",
                     )
 
@@ -371,6 +530,18 @@ class Intercom(commands.Cog):
             await c.execute("DELETE FROM webhooks_urls WHERE gid=?", (guild.id,))
             self.all_channels = [channel for channel in self.client.get_all_channels()]
             return await db.commit()
+        
+    # Hook the user banning event to update the ban cache for that guild
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild, user):
+        # Update the ban cache for that guild
+        self.ban_cache[guild.id] = [ban.user.id for ban in await guild.bans().flatten()]
+
+    # Hook the user unbanning event to update the ban cache for that guild
+    @commands.Cog.listener()
+    async def on_member_unban(self, guild, user):
+        # Update the ban cache for that guild
+        self.ban_cache[guild.id] = [ban.user.id for ban in await guild.bans().flatten()]
 
 
 def setup(client):

@@ -17,7 +17,15 @@ if not os.path.isdir("runtime"):
 config = configparser.ConfigParser()
 config.read("runtime/config.ini")
 
-client = commands.Bot(command_prefix="$linktool.")
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.bans = True
+
+
+client = commands.Bot(command_prefix="$linktool.", intents=intents)
+
+# Request the Message Content Privileged Intents
 
 
 @client.event
