@@ -26,7 +26,7 @@ class Intercom(commands.Cog):
                     """
                 )
                 c.execute(
-                    "CREATE TABLE IF NOT EXISTS webhooks_urls (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT, gid INTEGER)"
+                    "CREATE TABLE IF NOT EXISTS webhooks_urls (id INTEGER PRIMARY KEY, url TEXT, gid INTEGER)"
                 )
                 c.execute(
                     "CREATE TABLE IF NOT EXISTS silent_list (id INTEGER PRIMARY KEY AUTOINCREMENT, gid INTEGER, silent_gid INTEGER)"
@@ -183,8 +183,8 @@ class Intercom(commands.Cog):
                     check = await check.fetchone()
                     if check is None:
                         await c.execute(
-                            "INSERT INTO fail2ban VALUES (?, ?, ?, ?)",
-                            (ctx.channel.id, ctx.guild.id, target.guild.id, 1)
+                            "INSERT INTO fail2ban VALUES (?, ?, 1)",
+                            (ctx.guild.id, target.guild.id)
                         )
                     else:
                         await c.execute(
@@ -408,7 +408,8 @@ class Intercom(commands.Cog):
                 result = await c.fetchone()
                 if result is None:
                     await c.execute(
-                        "INSERT INTO silent_list VALUES (?, ?)", (ctx.guild.id, guild_id)
+                        "INSERT INTO silent_list (gid, silent_gid) VALUES (?, ?)",
+                        (ctx.guild.id, guild_id),
                     )
                     await db.commit()
                     await ctx.send(f"Successfully silenced `{guild_id}`!")
