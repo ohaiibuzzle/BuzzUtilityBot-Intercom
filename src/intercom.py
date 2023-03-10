@@ -26,13 +26,25 @@ class Intercom(commands.Cog):
                     """
                 )
                 c.execute(
-                    "CREATE TABLE IF NOT EXISTS webhooks_urls (id INTEGER PRIMARY KEY, url TEXT, gid INTEGER)"
+                    """
+                    CREATE TABLE IF NOT EXISTS webhooks_urls 
+                    (id INTEGER PRIMARY KEY, url TEXT, gid INTEGER)
+                    """
                 )
                 c.execute(
-                    "CREATE TABLE IF NOT EXISTS silent_list (id INTEGER PRIMARY KEY AUTOINCREMENT, gid INTEGER, silent_gid INTEGER)"
+                    """
+                    CREATE TABLE IF NOT EXISTS silent_list 
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                    gid INTEGER, silent_gid INTEGER)
+                    """
                 )
                 c.execute(
-                    "CREATE TABLE IF NOT EXISTS fail2ban (id INTEGER PRIMARY KEY AUTOINCREMENT, gid INTEGER, silent_gid INTEGER, count INTEGER DEFAULT 0)"
+                    """
+                    CREATE TABLE IF NOT EXISTS fail2ban 
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                    gid INTEGER, target_gid INTEGER, 
+                    count INTEGER DEFAULT 0)
+                    """
                 )
                 conn.commit()
                 conn.close()
@@ -96,7 +108,7 @@ class Intercom(commands.Cog):
                 # Check if the target server silenced the initiating server or the initiator failed too many times
                 check = await c.execute(
                     "SELECT * FROM silent_list WHERE gid=? AND silent_gid=?",
-                    (ctx.guild.id, target.guild.id)
+                    (target.guild.id, ctx.guild.id)
                 )
                 check = await check.fetchone()
                 if check is not None:
@@ -104,24 +116,25 @@ class Intercom(commands.Cog):
                     return await ctx.send("You can only link text channels!")
                 
                 check = await c.execute(
-                    "SELECT * FROM fail2ban WHERE gid=? AND silent_gid=?",
+                    "SELECT * FROM fail2ban WHERE gid=? AND target_gid=?",
                     (ctx.guild.id, target.guild.id)
                 )
                 check = await check.fetchone()
                 if check is not None:
                     # If more than 3 fails, throw a dubious error message
-                    if check[3] > 3:
+                    if check[3] >= 3:
                         await ctx.send("You can only link text channels!")
                         # ... and silent the initiating server from the target 
                         await c.execute(
-                            "INSERT INTO silent_list VALUES (?, ?)",
+                            "INSERT INTO silent_list (gid, silent_gid) VALUES (?, ?)",
                             (target.guild.id, ctx.guild.id)
                         )
                         # remove the counter
                         await c.execute(
-                            "DELETE FROM fail2ban WHERE gid=? AND silent_gid=?",
+                            "DELETE FROM fail2ban WHERE gid=? AND target_gid=?",
                             (ctx.guild.id, target.guild.id)
                         )
+                        await db.commit()
 
                 if target == ctx.channel:
                     return await ctx.send("You can't link to yourself!")
@@ -171,26 +184,27 @@ class Intercom(commands.Cog):
                     await target.send(embed=embed)
 
                     msg = await self.client.wait_for(
-                        "message", check=verify_target, timeout=30
+                        "message", check=verify_target, timeout=3
                     )
                 except asyncio.TimeoutError:
                     await target.send("Timeout!")
                     # Add a fail counter or increment it
                     check = await c.execute(
-                        "SELECT * FROM fail2ban WHERE gid=? AND silent_gid=?",
+                        "SELECT * FROM fail2ban WHERE gid=? AND target_gid=?",
                         (ctx.guild.id, target.guild.id)
                     )
                     check = await check.fetchone()
                     if check is None:
                         await c.execute(
-                            "INSERT INTO fail2ban VALUES (?, ?, 1)",
+                            "INSERT INTO fail2ban (gid, target_gid, count) VALUES (?, ?, 1)",
                             (ctx.guild.id, target.guild.id)
                         )
                     else:
                         await c.execute(
-                            "UPDATE fail2ban SET count=count+1 WHERE gid=? AND silent_gid=?",
+                            "UPDATE fail2ban SET count=count+1 WHERE gid=? AND target_gid=?",
                             (ctx.guild.id, target.guild.id)
                         )
+                    await db.commit()
                     return await ctx.send(
                         "The other side did not confirm this activity"
                     )
