@@ -1,7 +1,12 @@
-import discord
-from discord.ext import commands
+"""
+Main script to launch the bot
+"""
 import configparser
 import os
+import sys
+
+import discord
+from discord.ext import commands
 
 if not os.path.isdir("runtime"):
     os.mkdir("runtime")
@@ -9,10 +14,10 @@ if not os.path.isdir("runtime"):
     config["Credentials"] = {
         "discord_token": "",
     }
-    with open("runtime/config.ini", "w") as f:
+    with open("runtime/config.ini", "w", encoding="utf-8") as f:
         config.write(f)
     print("Created runtime directory. Please populate your credentials")
-    exit(0)
+    sys.exit(0)
 
 config = configparser.ConfigParser()
 config.read("runtime/config.ini")
@@ -30,6 +35,9 @@ client = commands.Bot(command_prefix="$linktool.", intents=intents)
 
 @client.event
 async def on_ready():
+    """
+    Run when the bot is ready
+    """
     print("Logged in as")
     print(client.user.name)
     print(client.user.id)
