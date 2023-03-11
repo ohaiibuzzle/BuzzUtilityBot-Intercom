@@ -245,7 +245,7 @@ class Intercom(commands.Cog):
                     return await ctx.send(
                         "The other side did not confirm this activity"
                     )
-                
+
                 await ctx.send("Linking...")
 
                 # Clears any fail counter
