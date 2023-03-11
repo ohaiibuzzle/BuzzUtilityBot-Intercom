@@ -1,0 +1,21 @@
+name: Lint Source
+
+on:
+  push:
+    branches: [ senpai ]
+  pull_request:
+    branches: [ senpai ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Use Python 3.10
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.10'
+      - name: Install Pylint
+        run: pip install pylint
+      - name: Run Pylint on source
+        run: pylint --rcfile=.pylintrc src
