@@ -1,10 +1,10 @@
 name: Lint Source
 
+# run on push or pr on any branch
+
 on:
   push:
-    branches: [ senpai ]
   pull_request:
-    branches: [ senpai ]
 
 jobs:
   lint:
