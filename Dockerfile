@@ -5,7 +5,7 @@ RUN apk add --no-cache py3-pip
 
 # Install requirements
 COPY requirements.txt .
-RUN pip3 install -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Cache busting
 ARG CACHEBUST=1
