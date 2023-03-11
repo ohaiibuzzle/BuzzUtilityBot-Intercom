@@ -133,6 +133,23 @@ class Intercom(commands.Cog):
                     lambda m: m.id == channel, self.all_channels
                 )
 
+                if target is None:
+                    return await ctx.send(
+                        str(
+                        "Invalid channel ID or this bot cannot see the target channel "
+                        "(If you just created the target channel, please wait about 5 minutes)!"
+                        )
+                    )
+
+                if target == ctx.channel:
+                    return await ctx.send("You can't link to yourself!")
+
+                if (
+                    ctx.channel.type != discord.ChannelType.text
+                    or target.type != discord.ChannelType.text
+                ):
+                    return await ctx.send("You can only link text channels!")
+
                 # Check if the target server silenced the initiating server
                 # or the initiator failed too many times
                 check = await cursor.execute(
@@ -164,23 +181,6 @@ class Intercom(commands.Cog):
                             (ctx.guild.id, target.guild.id),
                         )
                         await database.commit()
-
-                if target == ctx.channel:
-                    return await ctx.send("You can't link to yourself!")
-
-                if target is None:
-                    return await ctx.send(
-                        str(
-                        "Invalid channel ID or this bot cannot see the target channel "
-                        "(If you just created the target channel, please wait about 5 minutes)!"
-                        )
-                    )
-
-                if (
-                    ctx.channel.type != discord.ChannelType.text
-                    or target.type != discord.ChannelType.text
-                ):
-                    return await ctx.send("You can only link text channels!")
 
                 # Warn and disable sync_bans if we don't have the required permissions
                 if (
