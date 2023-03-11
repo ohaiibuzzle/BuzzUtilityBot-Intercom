@@ -8,16 +8,19 @@ import sys
 import discord
 from discord.ext import commands
 
+# Check if the runtime dir and runtime/config.ini exists, else create them
 if not os.path.isdir("runtime"):
     os.mkdir("runtime")
+if not os.path.isfile("runtime/config.ini"):
     config = configparser.ConfigParser()
     config["Credentials"] = {
         "discord_token": "",
     }
     with open("runtime/config.ini", "w", encoding="utf-8") as f:
         config.write(f)
-    print("Created runtime directory. Please populate your credentials")
+    print("Created runtime/config.ini. Please populate your credentials")
     sys.exit(0)
+
 
 config = configparser.ConfigParser()
 config.read("runtime/config.ini")
