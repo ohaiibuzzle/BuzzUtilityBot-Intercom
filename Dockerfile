@@ -1,7 +1,4 @@
-FROM alpine:latest
-
-# Install python3
-RUN apk add --no-cache py3-pip
+FROM python:3.11-slim
 
 # Install requirements
 COPY requirements.txt .
