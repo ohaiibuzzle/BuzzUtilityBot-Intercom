@@ -11,7 +11,7 @@ frozenlist==1.4.1
 idna==3.6
 multidict==6.0.5
 orjson==3.9.15
-py-cord==2.4.1
+py-cord==2.5.0
 pycares==4.4.0
 pycparser==2.22
 typing_extensions==4.10.0
