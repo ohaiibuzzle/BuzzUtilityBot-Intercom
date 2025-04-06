@@ -14,5 +14,5 @@ orjson==3.10.16
 py-cord==2.4.1
 pycares==4.5.0
 pycparser==2.22
-typing_extensions==4.12.2
+typing_extensions==4.13.1
 yarl==1.18.3
