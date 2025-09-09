@@ -5,7 +5,7 @@ aiosqlite==0.21.0
 async-timeout==4.0.3
 attrs==25.3.0
 Brotli==1.1.0
-cffi==1.17.1
+cffi==2.0.0
 charset-normalizer==3.4.2
 frozenlist==1.7.0
 idna==3.10
