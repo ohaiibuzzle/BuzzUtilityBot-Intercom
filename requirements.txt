@@ -8,7 +8,7 @@ Brotli==1.1.0
 cffi==1.17.1
 charset-normalizer==3.4.4
 frozenlist==1.7.0
-idna==3.10
+idna==3.11
 multidict==6.7.0
 orjson==3.11.3
 py-cord==2.4.1
