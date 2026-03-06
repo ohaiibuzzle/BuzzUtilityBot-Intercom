@@ -15,4 +15,4 @@ py-cord==2.4.1
 pycares==4.11.0
 pycparser==2.23
 typing_extensions==4.15.0
-yarl==1.22.0
+yarl==1.23.0
